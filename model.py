@@ -1,88 +1,13 @@
 #
+# KTH Royal Institute of Technology
 # DD2424: Deep Learning in Data Science
 # Assignment 3
 #
 # Carlo Rapisarda (carlora@kth.se)
 #
 
-
-## Imports ##
-
 import numpy as np
 from timeit import default_timer as timer
-#import matplotlib.pyplot as plt
-#import seaborn as sns
-import os
-#import pandas as pd
-
-
-## Utilities ##
-
-def unpickle(filename):
-    import pickle
-    with open(filename, 'rb') as fo:
-        res = pickle.load(fo, encoding='bytes')
-    return res
-
-def play_bell():
-    os.system('afplay /System/Library/Sounds/Ping.aiff')
-
-
-## Reading the dataset ##
-
-def load_cifar10(batch='data_batch_1', limit_N=None, limit_d=None, zero_mean=True):
-    # Unpickled raw dataset
-    dict = unpickle('./dataset/cifar-10/' + batch)
-
-    # Vectorized images (3072*10000)
-    X = dict[b'data'].T / 255.0
-
-    # Labels
-    y = np.array(dict[b'labels'])
-
-    if limit_N is not None:
-        X = X[:, :limit_N]
-        y = y[:limit_N]
-
-    if limit_d is not None:
-        X = X[:limit_d, :]
-
-    # Number of images
-    N = X.shape[1]
-
-    # Number of classes
-    K = 10
-
-    # One-hot representation of the labels (K*N)
-    Y = np.zeros((y.size, K))
-    Y[np.arange(y.size), y] = 1
-    Y = Y.T
-
-    if zero_mean:
-        X = subtract_mean(X)
-
-    # Dimension of each image
-    # d = 32*32*3
-
-    return (X, Y, y)
-
-def load_multibatch_cifar10(batches=['data_batch_1'], limit_d=None, zero_mean=True):
-    X, Y, y = ([], [], [])
-    for b in batches:
-        Xi, Yi, yi = load_cifar10(b, limit_d=limit_d, zero_mean=zero_mean)
-        X.append(Xi)
-        Y.append(Yi)
-        y.append(yi)
-    X = np.concatenate(X, axis=1)
-    Y = np.concatenate(Y, axis=1)
-    y = np.concatenate(y)
-    return X, Y, y
-
-def subtract_mean(X):
-    return X - np.mean(X, axis=1).reshape(-1,1)
-
-
-## Model ##
 
 class Net:
 
@@ -111,12 +36,11 @@ class Net:
         return exp_s / exp_sum
 
     def forward(self, X):
-        # Each column of P contains the probability for each
-        # label for the image in the corresponding column of X
-        # (P has size K*N)
-
-        # Hs are the outputs of each layer, including the input layer, excluding the output
-        # Hs[0] = X
+        """
+        :param X: the training samples
+        :return: (Hs, P) where Hs are the outputs of each layer, including the input, excluding the output,
+        and P is a matrix with the probabilities for each label for the image in the corresponding column of X
+        """
 
         Hi = X #.copy()
         si = None
@@ -138,6 +62,7 @@ class Net:
         return np.sum(loss) / N
 
     def compute_cost(self, X, Y):
+
         # Regularization term
         L_2 = np.sum([np.sum(Wi ** 2) for Wi in self.Ws])
 
@@ -192,7 +117,6 @@ class Net:
         eta = params.get('eta', 0.01)
         gamma = params.get('gamma', 0.0)
         decay_rate = params.get('decay_rate', 1.0)
-        lamb = params.get('lambda', 0.0)
         plateau_guard = params.get('plateau_guard', None)
 
         N = X.shape[1]
@@ -210,9 +134,6 @@ class Net:
         costs = [self.compute_cost(X, Y)]
         losses = [self.cross_entropy_loss(X, Y)]
         accuracies = [self.compute_accuracy(X, y)]
-        test_costs = None
-        test_losses = None
-        test_accuracies = None
         times = []
         speed = []
         test_speed = []
@@ -292,31 +213,3 @@ class Net:
             'speed': speed,
             'test_speed': test_speed
         }
-
-def debug_two_layers():
-    np.random.seed(42)
-    X, Y, y = load_multibatch_cifar10(batches=[
-        'data_batch_1', 'data_batch_2', 'data_batch_3', 'data_batch_4', 'data_batch_5'
-    ])
-    X_test, Y_test, y_test = load_cifar10(batch='test_batch', limit_N=None)
-    K, d = (Y.shape[0], X.shape[0])
-    net_sizes = [d, 50, K]
-    gd_params = {
-        'eta': 0.022661,
-        'batch_size': 100,
-        'epochs': 10,
-        'gamma': 0.6,
-        'decay_rate': 0.93,
-        'lambda': 0.000047,
-        'plateau_guard': -0.0009
-    }
-    net = Net(net_sizes, gd_params)
-    r = net.train(X, Y, X_test, Y_test, silent=False)
-
-    costs, test_costs = (r['costs'], r['test_costs'])
-    losses, test_losses, accuracies, test_accuracies = (r['losses'], r['test_losses'], r['accuracies'], r['test_accuracies'])
-
-    print("Final accuracy: {}".format(accuracies[-1]))
-    print("Final accuracy (test): {}".format(test_accuracies[-1]))
-
-# debug_two_layers()
