@@ -16,9 +16,9 @@ class Net:
         self.n_layers = len(network_sizes)-1
         self.descent_params = descent_params
         self.lamb = descent_params.get('lambda', 0.0)
-        self.Ws, self.bs = self.initial_theta()
+        self.Ws, self.bs = self._initial_theta()
 
-    def initial_theta(self):
+    def _initial_theta(self):
         mu = 0.0
         sigma = 0.001
         Ws, bs = [], []
@@ -29,6 +29,9 @@ class Net:
             Ws.append(Wi)
             bs.append(bi)
         return Ws, bs
+
+    def _should_batch_normalize(self):
+        return self.descent_params.get('batch_normalize', True)
 
     def softmax(self, s, axis=0):
         exp_s = np.exp(s)
@@ -42,6 +45,10 @@ class Net:
         and P is a matrix with the probabilities for each label for the image in the corresponding column of X
         """
 
+        if self._should_batch_normalize():
+            _, _, _, Hs, P = self.forward_bn(X)
+            return Hs, P
+
         Hi = X #.copy()
         si = None
         Hs = []
@@ -54,6 +61,39 @@ class Net:
 
         P = self.softmax(si)
         return Hs, P
+
+    def batch_normalize_s(self, s):
+        mean = np.mean(s, axis=1).reshape(-1,1)
+        var = np.var(s, axis=1).reshape(-1,1)
+        s_norm = (s - mean) / var
+        return s_norm, mean, var
+
+    def forward_bn(self, X):
+
+        Hi = X #.copy()
+        si = None
+        Hs = []
+        s_means = []
+        s_vars = []
+        ss = []
+
+        for i in range(self.n_layers):
+
+            Hs.append(Hi)
+            Wi, bi = self.Ws[i], self.bs[i]
+
+            si = Wi @ Hi + bi
+            ss.append(si)
+
+            si, mean, var = self.batch_normalize_s(si)
+            s_means.append(mean)
+            s_vars.append(var)
+
+            Hi = np.maximum(0.0, si)
+
+        P = self.softmax(ss[-1])
+        assert np.isfinite(P).all()
+        return ss, s_means, s_vars, Hs, P
 
     def cross_entropy_loss(self, X, Y):
         N = X.shape[1]
@@ -107,6 +147,70 @@ class Net:
 
         return grads_W, grads_b
 
+    def batch_normalize_G(self, G, si, mean, var):
+
+        N = G.shape[1]
+        eps = 1e-5 # FIXME: How to set this?
+        V = np.diag(var.reshape(-1) + eps)
+        V[V == 0.0] = np.inf
+
+        dMean = 0.0
+        dVar = 0.0
+        for j in range(N):
+            dVar = dVar +   G[:,j] @ (V**(-3/2.0)) @ np.diag(si[:,j] - mean.reshape(-1))
+            dMean = dMean + G[:,j] @ (V**(-1/2.0))
+
+        dVar = -0.5 * dVar
+        dMean = -dMean
+
+        G_norm = np.zeros(G.shape)
+        for j in range(N):
+            G_norm[:,j] = G[:,j] @ (V**(-1/2.0)) + 2.0/N * dVar @ np.diag(si[:,j] - mean.reshape(-1)) + dMean/N
+
+        # var_mat = np.repeat(var ** (-3 / 2.0), N, axis=1)
+        # dVar = -0.5 * np.sum(G  * var_mat * (si - mean), axis=1).reshape(-1,1)
+        #
+        # var_mat = np.repeat(var ** (-1 / 2.0), N, axis=1)
+        # dMean = -np.sum(G * var_mat, axis=1).reshape(-1,1)
+        #
+        # dVar_mat = np.repeat(dVar, N, axis=1)
+        # G_norm =  G * var_mat + 2.0/N * (dVar_mat * (si - mean)) + dMean/N
+
+        return G_norm
+
+    def compute_gradients_fast_bn(self, X, Y, P, Hs, ss, s_means, s_vars):
+
+        N = X.shape[1]
+        G = (P - Y)
+        grads_W, grads_b = [], []
+
+        for j in range(self.n_layers):
+
+            i = self.n_layers -1 -j # Reversed
+            Hi, Wi = Hs[i], self.Ws[i]
+
+            grad_bi = np.mean(G, axis=1).reshape(-1, 1)
+            grad_Wi = (G @ Hi.T) / N + (2 * self.lamb * Wi)
+
+            assert np.isfinite(grad_bi).all()
+            assert np.isfinite(grad_Wi).all()
+
+            grads_b.append(grad_bi)
+            grads_W.append(grad_Wi)
+
+            G = (G.T @ Wi).T
+            G[Hi <= 0] = 0.0
+
+            if i > 0:
+                si, mean, var = ss[i-1], s_means[i-1], s_vars[i-1]
+                assert si.shape == G.shape
+                G = self.batch_normalize_G(G, si, mean, var)
+
+        grads_W.reverse()
+        grads_b.reverse()
+
+        return grads_W, grads_b
+
     def train(self, X, Y, X_test, Y_test, silent=False):
 
         tick_t = timer()
@@ -118,6 +222,7 @@ class Net:
         gamma = params.get('gamma', 0.0)
         decay_rate = params.get('decay_rate', 1.0)
         plateau_guard = params.get('plateau_guard', None)
+        batch_normalize = self._should_batch_normalize()
 
         N = X.shape[1]
         batches = N // batch_size
@@ -158,8 +263,12 @@ class Net:
                 Y_batch = Y[:, i_beg:i_end]
 
                 # Compute gradients
-                Hs, P = self.forward(X_batch)
-                grads_W, grads_b = self.compute_gradients_fast(X_batch, Y_batch, P, Hs)
+                if batch_normalize:
+                    ss, s_means, s_vars, Hs, P = self.forward_bn(X_batch)
+                    grads_W, grads_b = self.compute_gradients_fast_bn(X_batch, Y_batch, P, Hs, ss, s_means, s_vars)
+                else:
+                    Hs, P = self.forward(X_batch)
+                    grads_W, grads_b = self.compute_gradients_fast(X_batch, Y_batch, P, Hs)
 
                 # Update W and b
                 for j in range(len(Ws)):

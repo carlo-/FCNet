@@ -27,7 +27,8 @@ def test_two_layers():
         'gamma': 0.6,
         'decay_rate': 0.93,
         'lambda': 0.000047,
-        'plateau_guard': -0.0009
+        'plateau_guard': -0.0009,
+        'batch_normalize': False
     }
 
     net = Net(net_sizes, gd_params)
@@ -48,6 +49,7 @@ def test_three_layers():
     K, d = (Y.shape[0], X.shape[0])
 
     net_sizes = [d, 50, 30, K]
+
     gd_params = {
         'eta': 0.01,
         'batch_size': 100,
@@ -55,6 +57,18 @@ def test_three_layers():
         'gamma': 0.0,
         'decay_rate': 1.0,
         'lambda': 0.0,
+        'batch_normalize': True
+    }
+
+    gd_params = {
+        'eta': 0.022661,
+        'batch_size': 100,
+        'epochs': 10,
+        'gamma': 0.6,
+        'decay_rate': 0.93,
+        'lambda': 0.000047,
+        'plateau_guard': -0.0009,
+        'batch_normalize': True
     }
 
     net = Net(net_sizes, gd_params)
@@ -68,4 +82,5 @@ def test_three_layers():
 
 
 if __name__ == "__main__":
+    # test_two_layers()
     test_three_layers()
