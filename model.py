@@ -11,6 +11,8 @@ from timeit import default_timer as timer
 
 class Net:
 
+    # ==================== Initialization ====================
+
     def __init__(self, network_sizes, descent_params):
         self.network_sizes = network_sizes
         self.n_layers = len(network_sizes)-1
@@ -30,27 +32,16 @@ class Net:
             bs.append(bi)
         return Ws, bs
 
-    def _should_batch_normalize(self):
-        return self.descent_params.get('batch_normalize', True)
 
-    @staticmethod
-    def softmax(s, axis=0):
-        exp_s = np.exp(s)
-        exp_sum = np.sum(exp_s, axis=axis)
-        return exp_s / exp_sum
+    # ==================== FW/BW passes ====================
 
-    def forward(self, X):
-        """
-        :param X: the training samples
-        :return: (Hs, P) where Hs are the outputs of each layer, including the input, excluding the output,
-        and P is a matrix with the probabilities for each label for the image in the corresponding column of X
-        """
+    def _forward(self, X):
 
         if self._should_batch_normalize():
-            _, _, _, Hs, P = self.forward_bn(X)
+            _, _, _, Hs, P = self._forward_bn(X)
             return Hs, P
 
-        Hi = X #.copy()
+        Hi = X
         si = None
         Hs = []
 
@@ -60,71 +51,10 @@ class Net:
             si = Wi @ Hi + bi
             Hi = np.maximum(0.0, si)
 
-        P = self.softmax(si)
+        P = self._softmax(si)
         return Hs, P
 
-    @staticmethod
-    def batch_normalize_s(s):
-        mean = np.mean(s, axis=1).reshape(-1,1)
-        var = np.var(s, axis=1).reshape(-1,1)
-        s_norm = (s - mean) / var
-        return s_norm, mean, var
-
-    def forward_bn(self, X):
-
-        Hi = X #.copy()
-        si = None
-        Hs = []
-        s_means = []
-        s_vars = []
-        ss = []
-
-        for i in range(self.n_layers):
-
-            Hs.append(Hi)
-            Wi, bi = self.Ws[i], self.bs[i]
-
-            si = Wi @ Hi + bi
-            ss.append(si)
-
-            si, mean, var = self.batch_normalize_s(si)
-            s_means.append(mean)
-            s_vars.append(var)
-
-            Hi = np.maximum(0.0, si)
-
-        P = self.softmax(ss[-1])
-        assert np.isfinite(P).all()
-        return ss, s_means, s_vars, Hs, P
-
-    def cross_entropy_loss(self, X, Y):
-        N = X.shape[1]
-        _, P = self.forward(X)
-        loss = -Y * np.log(P)
-        return np.sum(loss) / N
-
-    def compute_cost(self, X, Y):
-
-        # Regularization term
-        L_2 = np.sum([np.sum(Wi ** 2) for Wi in self.Ws])
-
-        # Cross-entropy loss
-        ce_loss = self.cross_entropy_loss(X, Y)
-
-        return ce_loss + self.lamb * L_2
-
-    def classify(self, X):
-        _, P = self.forward(X)
-        return np.argmax(P, axis=0)
-
-    def compute_accuracy(self, X, y):
-        y_star = self.classify(X)
-        # Count the number of correctly classified samples
-        correct = np.sum([y_star == y])
-        N = X.shape[1]
-        return float(correct) / N
-
-    def compute_gradients_fast(self, X, Y, P, Hs):
+    def _backward(self, X, Y, P, Hs):
 
         N = X.shape[1]
         G = (P - Y)
@@ -149,44 +79,59 @@ class Net:
 
         return grads_W, grads_b
 
+
+    # ==================== FW/BW passes with Batch Normalization ====================
+
+    def _should_batch_normalize(self):
+        return self.descent_params.get('batch_normalize', True)
+
     @staticmethod
-    def batch_normalize_G_fast(G, si, mean, var):
+    def _batch_normalize_fw(s):
+        mean = np.mean(s, axis=1).reshape(-1,1)
+        var = np.var(s, axis=1).reshape(-1,1)
+        s_norm = (s - mean) / var
+        return s_norm, mean, var
 
+    def _forward_bn(self, X):
+
+        Hi = X
+        Hs = []
+        s_means = []
+        s_vars = []
+        ss = []
+
+        for i in range(self.n_layers):
+
+            Hs.append(Hi)
+            Wi, bi = self.Ws[i], self.bs[i]
+
+            si = Wi @ Hi + bi
+            ss.append(si)
+
+            si, mean, var = self._batch_normalize_fw(si)
+            s_means.append(mean)
+            s_vars.append(var)
+
+            Hi = np.maximum(0.0, si)
+
+        P = self._softmax(ss[-1])
+        assert np.isfinite(P).all()
+        return ss, s_means, s_vars, Hs, P
+
+    @staticmethod
+    def _batch_normalize_bw(G, si, mean, var):
+
+        eps = 1e-5  # FIXME: How to set this?
         N = G.shape[1]
-        eps = 1e-5 # FIXME: How to set this?
-
         var_eps = var + eps
         si_zero_mean = si - mean
 
-        dVar_f = -0.5 * np.sum(G * (var_eps**(-3/2.0)) * si_zero_mean, axis=1).reshape(-1,1)
-        dMean_f = -np.sum(G * (var_eps**(-1/2.0)), axis=1).reshape(-1,1)
+        dVar_f = -0.5 * np.sum(G * (var_eps ** (-3 / 2.0)) * si_zero_mean, axis=1).reshape(-1, 1)
+        dMean_f = -np.sum(G * (var_eps ** (-1 / 2.0)), axis=1).reshape(-1, 1)
 
-        return G * (var_eps**(-1/2.0)) + (2.0/N * dVar_f * si_zero_mean) + dMean_f/N
+        return G * (var_eps ** (-1 / 2.0)) + (2.0 / N * dVar_f * si_zero_mean) + dMean_f / N
 
-    @staticmethod
-    def batch_normalize_G(G, si, mean, var):
-        assert False, "Deprecated, use batch_normalize_G_fast"
-
-        N = G.shape[1]
-        eps = 1e-5 # FIXME: How to set this?
-        V = np.diag(var.reshape(-1) + eps)
-        V[V == 0.0] = np.inf
-
-        dMean = 0.0
-        dVar = 0.0
-        for j in range(N):
-            dVar = dVar +   G[:,j] @ (V**(-3/2.0)) @ np.diag(si[:,j] - mean.reshape(-1))
-            dMean = dMean + G[:,j] @ (V**(-1/2.0))
-        dVar = -0.5 * dVar
-        dMean = -dMean
-
-        G_norm = np.zeros(G.shape)
-        for j in range(N):
-            G_norm[:,j] = G[:,j] @ (V**(-1/2.0)) + 2.0/N * dVar @ np.diag(si[:,j] - mean.reshape(-1)) + dMean/N
-
-        return G_norm
-
-    def compute_gradients_fast_bn(self, X, Y, P, Hs, ss, s_means, s_vars):
+    def _backward_bn(self, X, Y, P, Hs, ss, s_means, s_vars):
 
         N = X.shape[1]
         G = (P - Y)
@@ -194,7 +139,7 @@ class Net:
 
         for j in range(self.n_layers):
 
-            i = self.n_layers -1 -j # Reversed
+            i = self.n_layers - 1 - j # Reversed
             Hi, Wi = Hs[i], self.Ws[i]
 
             grad_bi = np.mean(G, axis=1).reshape(-1, 1)
@@ -210,14 +155,50 @@ class Net:
             G[Hi <= 0] = 0.0
 
             if i > 0:
-                si, mean, var = ss[i-1], s_means[i-1], s_vars[i-1]
+                si, mean, var = ss[i - 1], s_means[i - 1], s_vars[i - 1]
                 assert si.shape == G.shape
-                G = self.batch_normalize_G_fast(G, si, mean, var)
+                G = self._batch_normalize_bw(G, si, mean, var)
 
         grads_W.reverse()
         grads_b.reverse()
 
         return grads_W, grads_b
+
+
+    # ==================== Cost, Accuracy, Utilities ====================
+
+    @staticmethod
+    def _softmax(s, axis=0):
+        exp_s = np.exp(s)
+        exp_sum = np.sum(exp_s, axis=axis)
+        return exp_s / exp_sum
+
+    def _cross_entropy_loss(self, X, Y):
+        N = X.shape[1]
+        _, P = self._forward(X)
+        loss = -Y * np.log(P)
+        return np.sum(loss) / N
+
+    def compute_cost(self, X, Y):
+        # Regularization term
+        L_2 = np.sum([np.sum(Wi ** 2) for Wi in self.Ws])
+        # Cross-entropy loss
+        ce_loss = self._cross_entropy_loss(X, Y)
+        # Sum of both contributions
+        return ce_loss + self.lamb * L_2
+
+    def classify(self, X):
+        _, P = self._forward(X)
+        return np.argmax(P, axis=0)
+
+    def compute_accuracy(self, X, y):
+        y_star = self.classify(X)
+        correct = np.sum([y_star == y])
+        N = X.shape[1]
+        return float(correct) / N
+
+
+    # ==================== Gradient descent ====================
 
     def train(self, X, Y, X_test, Y_test, silent=False):
 
@@ -245,7 +226,7 @@ class Net:
 
         # Keep track of the performance at each epoch
         costs = [self.compute_cost(X, Y)]
-        losses = [self.cross_entropy_loss(X, Y)]
+        losses = [self._cross_entropy_loss(X, Y)]
         accuracies = [self.compute_accuracy(X, y)]
         times = []
         speed = []
@@ -253,7 +234,7 @@ class Net:
 
         y_test = np.argmax(Y_test, axis=0)
         test_costs = [self.compute_cost(X_test, Y_test)]
-        test_losses = [self.cross_entropy_loss(X_test, Y_test)]
+        test_losses = [self._cross_entropy_loss(X_test, Y_test)]
         test_accuracies = [self.compute_accuracy(X_test, y_test)]
 
         # For each epoch
@@ -272,11 +253,11 @@ class Net:
 
                 # Compute gradients
                 if batch_normalize:
-                    ss, s_means, s_vars, Hs, P = self.forward_bn(X_batch)
-                    grads_W, grads_b = self.compute_gradients_fast_bn(X_batch, Y_batch, P, Hs, ss, s_means, s_vars)
+                    ss, s_means, s_vars, Hs, P = self._forward_bn(X_batch)
+                    grads_W, grads_b = self._backward_bn(X_batch, Y_batch, P, Hs, ss, s_means, s_vars)
                 else:
-                    Hs, P = self.forward(X_batch)
-                    grads_W, grads_b = self.compute_gradients_fast(X_batch, Y_batch, P, Hs)
+                    Hs, P = self._forward(X_batch)
+                    grads_W, grads_b = self._backward(X_batch, Y_batch, P, Hs)
 
                 # Update W and b
                 for j in range(len(Ws)):
@@ -290,11 +271,11 @@ class Net:
 
             # Keep track of the performance at each epoch
             costs.append(self.compute_cost(X, Y))
-            losses.append(self.cross_entropy_loss(X, Y))
+            losses.append(self._cross_entropy_loss(X, Y))
             accuracies.append(self.compute_accuracy(X, y))
 
             test_costs.append(self.compute_cost(X_test, Y_test))
-            test_losses.append(self.cross_entropy_loss(X_test, Y_test))
+            test_losses.append(self._cross_entropy_loss(X_test, Y_test))
             test_accuracies.append(self.compute_accuracy(X_test, y_test))
 
             dJ = costs[-1] - costs[-2]
