@@ -33,7 +33,8 @@ class Net:
     def _should_batch_normalize(self):
         return self.descent_params.get('batch_normalize', True)
 
-    def softmax(self, s, axis=0):
+    @staticmethod
+    def softmax(s, axis=0):
         exp_s = np.exp(s)
         exp_sum = np.sum(exp_s, axis=axis)
         return exp_s / exp_sum
@@ -62,7 +63,8 @@ class Net:
         P = self.softmax(si)
         return Hs, P
 
-    def batch_normalize_s(self, s):
+    @staticmethod
+    def batch_normalize_s(s):
         mean = np.mean(s, axis=1).reshape(-1,1)
         var = np.var(s, axis=1).reshape(-1,1)
         s_norm = (s - mean) / var
@@ -147,7 +149,23 @@ class Net:
 
         return grads_W, grads_b
 
-    def batch_normalize_G(self, G, si, mean, var):
+    @staticmethod
+    def batch_normalize_G_fast(G, si, mean, var):
+
+        N = G.shape[1]
+        eps = 1e-5 # FIXME: How to set this?
+
+        var_eps = var + eps
+        si_zero_mean = si - mean
+
+        dVar_f = -0.5 * np.sum(G * (var_eps**(-3/2.0)) * si_zero_mean, axis=1).reshape(-1,1)
+        dMean_f = -np.sum(G * (var_eps**(-1/2.0)), axis=1).reshape(-1,1)
+
+        return G * (var_eps**(-1/2.0)) + (2.0/N * dVar_f * si_zero_mean) + dMean_f/N
+
+    @staticmethod
+    def batch_normalize_G(G, si, mean, var):
+        assert False, "Deprecated, use batch_normalize_G_fast"
 
         N = G.shape[1]
         eps = 1e-5 # FIXME: How to set this?
@@ -159,22 +177,12 @@ class Net:
         for j in range(N):
             dVar = dVar +   G[:,j] @ (V**(-3/2.0)) @ np.diag(si[:,j] - mean.reshape(-1))
             dMean = dMean + G[:,j] @ (V**(-1/2.0))
-
         dVar = -0.5 * dVar
         dMean = -dMean
 
         G_norm = np.zeros(G.shape)
         for j in range(N):
             G_norm[:,j] = G[:,j] @ (V**(-1/2.0)) + 2.0/N * dVar @ np.diag(si[:,j] - mean.reshape(-1)) + dMean/N
-
-        # var_mat = np.repeat(var ** (-3 / 2.0), N, axis=1)
-        # dVar = -0.5 * np.sum(G  * var_mat * (si - mean), axis=1).reshape(-1,1)
-        #
-        # var_mat = np.repeat(var ** (-1 / 2.0), N, axis=1)
-        # dMean = -np.sum(G * var_mat, axis=1).reshape(-1,1)
-        #
-        # dVar_mat = np.repeat(dVar, N, axis=1)
-        # G_norm =  G * var_mat + 2.0/N * (dVar_mat * (si - mean)) + dMean/N
 
         return G_norm
 
@@ -204,7 +212,7 @@ class Net:
             if i > 0:
                 si, mean, var = ss[i-1], s_means[i-1], s_vars[i-1]
                 assert si.shape == G.shape
-                G = self.batch_normalize_G(G, si, mean, var)
+                G = self.batch_normalize_G_fast(G, si, mean, var)
 
         grads_W.reverse()
         grads_b.reverse()
