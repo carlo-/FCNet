@@ -4,14 +4,14 @@ Python implementation of a fully connected neural network.
 Training is performed exclusively on CPU, and is implemented as Mini-batch Gradient Descent.\
 All settings of the descent can be customized for tuning.
 
-## Technical details:
+## Technical details
 - **Initialization:** He
 - **Activation function:** ReLU
 - **Cost function:** Cross-entropy loss + regularization term
 - **Regularization:** L2 with customizable factor (lambda)
 - **Output:** Softmax of the scores at the final layer
 
-## Network configuration:
+## Network configuration
 The `Net` object must be initialized with two arguments, an array containing the number of nodes at each layer (including input and output sizes), and a dictionary representing the configuration of the gradient descent.
 ```Python
 net_sizes = [3072, 50, 10] # [input, ...hidden, output]
@@ -20,7 +20,8 @@ net = Net(net_sizes, descent_config)
 ```
 In the example above, the initialized network has an input of `3072` dimensions, one single hidden layer with `50` nodes, and an output of `10` dimensions.
 
-## Descent configuration:
+## Descent configuration
+Below all settings for the gradient descent with their default values:
 ```Python
 descent_config = {
     'eta': 0.01, # learning rate
@@ -36,8 +37,16 @@ descent_config = {
 }
 ```
 
-## Full example:
+## Full example
 ```Python
+np.random.seed(42)
+
+X, Y, y = dataset.load_multibatch_cifar10()
+X_test, Y_test, y_test = dataset.load_cifar10(batch='test_batch')
+
+K, d = (Y.shape[0], X.shape[0])
+net_sizes = [d, 50, 30, K]
+
 descent_config = {
     'eta': 0.015,
     'batch_size': 100,
@@ -50,6 +59,12 @@ descent_config = {
     'overfitting_guard': 0.0,
     'output_folder': '../model/'
 }
+
+net = Net(net_sizes, descent_config)
+net.train(X, Y, X_test, Y_test)
+
+training_accuracy = net.compute_accuracy(X, y)
+test_accuracy = net.compute_accuracy(X_test, y_test)
 ```
 
 
