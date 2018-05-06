@@ -7,6 +7,7 @@
 #
 
 import numpy as np
+import pickle
 from timeit import default_timer as timer
 
 class Net:
@@ -31,6 +32,21 @@ class Net:
             Ws.append(Wi)
             bs.append(bi)
         return Ws, bs
+
+
+    # ==================== Import/Export ====================
+
+    @classmethod
+    def import_model(cls, filepath):
+        with open(filepath, 'rb') as f:
+            res = pickle.load(f, encoding='bytes')
+        if not isinstance(res, Net):
+            raise TypeError('File does not exist or is corrupted')
+        return res
+
+    def export_model(self, filepath):
+        with open(filepath, 'wb') as f:
+            pickle.dump(self, f)
 
 
     # ==================== FW/BW passes ====================
@@ -211,6 +227,8 @@ class Net:
         gamma = params.get('gamma', 0.0)
         decay_rate = params.get('decay_rate', 1.0)
         plateau_guard = params.get('plateau_guard', None)
+        overfitting_guard = params.get('overfitting_guard', None)
+        output_folder = params.get('output_folder', None)
         batch_normalize = self._should_batch_normalize()
 
         N = X.shape[1]
@@ -285,10 +303,9 @@ class Net:
             test_speed.append(dJ_star)
             mean_dJ_star = np.mean(test_speed[-2:])
 
-            if eta > 0.001 and plateau_guard is not None and mean_dJ_star >= plateau_guard:
-                if not silent:
-                    print('Plateau reached, adjusting eta...')
-                eta /= 10.0
+            if output_folder is not None:
+                filepath = "{}/model_epoch_{}.pkl".format(output_folder, e)
+                self.export_model(filepath)
 
             if not silent:
                 tock_e = timer()
@@ -297,9 +314,21 @@ class Net:
                 rem = (epochs - e) * np.mean(times[-3:])
                 print('===> Epoch[{}]: {}s remaining, {} dJ, {} dJ*'.format(e, int(round(rem)), round(dJ, 5), round(dJ_star, 5)))
 
+            if overfitting_guard is not None and mean_dJ_star >= overfitting_guard:
+                print('Overfitting detected, aborting training...')
+                break
+
+            if eta > 0.001 and plateau_guard is not None and mean_dJ_star >= plateau_guard:
+                if not silent:
+                    print('Plateau reached, adjusting eta...')
+                eta /= 10.0
+
         if not silent:
             tock_t = timer()
             print("Done. Took ~{}s".format(round(tock_t - tick_t)))
+            best_epoch = np.argmax(test_accuracies)
+            best_test_acc = test_accuracies[best_epoch]
+            print("Best test accuracy reached at epoch {} ({}%)".format(best_epoch, round(best_test_acc*100.0, 4)))
 
         return {
             'costs': costs,
