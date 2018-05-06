@@ -8,7 +8,7 @@ All settings of the descent can be customized for tuning.
 - **Initialization:** He
 - **Activation function:** ReLU
 - **Cost function:** Cross-entropy loss + regularization term
-- **Regularization:** L2 with customizable factor
+- **Regularization:** L2 with customizable factor (lambda)
 - **Output:** Softmax of the scores at the final layer
 
 ## Network configuration:
@@ -21,6 +21,37 @@ net = Net(net_sizes, descent_config)
 In the example above, the initialized network has an input of `3072` dimensions, one single hidden layer with `50` nodes, and an output of `10` dimensions.
 
 ## Descent configuration:
+```Python
+descent_config = {
+    'eta': 0.01, # learning rate
+    'batch_size': 100, # size of each batch to be used for training
+    'epochs': 40, # number of epochs
+    'gamma': 0.0, # momentum factor
+    'decay_rate': 1.0, # rate of decay of eta
+    'lambda': 0.0, # regularization factor
+    'batch_normalize': True, # whether or not batch normalization should be used
+    'plateau_guard': None, # if the speed of descent becomes greater than this value, eta is divided by 10.0
+    'overfitting_guard': None, # if the speed of descent becomes greater than this value, training is aborted
+    'output_folder': None # if specified, the model will be exported here after each epoch 
+}
+```
+
+## Full example:
+```Python
+descent_config = {
+    'eta': 0.015,
+    'batch_size': 100,
+    'epochs': 20,
+    'gamma': 0.6,
+    'decay_rate': 0.93,
+    'lambda': 0.0001,
+    'batch_normalize': True,
+    'plateau_guard': -0.001,
+    'overfitting_guard': 0.0,
+    'output_folder': '../model/'
+}
+```
+
 
 ## License
 This project is released under the MIT license. See `LICENSE` for more information.
