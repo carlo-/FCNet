@@ -14,12 +14,13 @@ class Net:
 
     # ==================== Initialization ====================
 
-    def __init__(self, network_sizes, descent_params):
+    def __init__(self, network_sizes, descent_params, init_theta=True):
         self.network_sizes = network_sizes
         self.n_layers = len(network_sizes)-1
         self.descent_params = descent_params
         self.lamb = descent_params.get('lambda', 0.0)
-        self.Ws, self.bs = self._initial_theta()
+        if init_theta:
+            self.Ws, self.bs = self._initial_theta()
 
     def _initial_theta(self):
         mu = 0.0
@@ -51,10 +52,10 @@ class Net:
 
     # ==================== FW/BW passes ====================
 
-    def _forward(self, X):
+    def _forward(self, X, s_means=None, s_vars=None):
 
         if self._should_batch_normalize():
-            _, _, _, Hs, P = self._forward_bn(X)
+            _, _, _, Hs, P = self._forward_bn(X, s_means, s_vars)
             return Hs, P
 
         Hi = X
@@ -102,19 +103,25 @@ class Net:
         return self.descent_params.get('batch_normalize', True)
 
     @staticmethod
-    def _batch_normalize_fw(s):
-        mean = np.mean(s, axis=1).reshape(-1,1)
-        var = np.var(s, axis=1).reshape(-1,1)
-        s_norm = (s - mean) / var
+    def _batch_normalize_fw(s, mean=None, var=None):
+        if mean is None or var is None:
+            eps = 1e-8
+            mean = np.mean(s, axis=1).reshape(-1,1)
+            var = np.var(s, axis=1).reshape(-1,1) + eps
+        s_norm = (s - mean) / (var ** 0.5)
         return s_norm, mean, var
 
-    def _forward_bn(self, X):
+    def _forward_bn(self, X, s_means=None, s_vars=None):
 
         Hi = X
         Hs = []
-        s_means = []
-        s_vars = []
         ss = []
+        use_estimates = True
+
+        if s_means is None or s_vars is None:
+            s_means = []
+            s_vars = []
+            use_estimates = False
 
         for i in range(self.n_layers):
 
@@ -124,9 +131,12 @@ class Net:
             si = Wi @ Hi + bi
             ss.append(si)
 
-            si, mean, var = self._batch_normalize_fw(si)
-            s_means.append(mean)
-            s_vars.append(var)
+            if use_estimates:
+                si, mean, var = self._batch_normalize_fw(si, s_means[i], s_vars[i])
+            else:
+                si, mean, var = self._batch_normalize_fw(si)
+                s_means.append(mean)
+                s_vars.append(var)
 
             Hi = np.maximum(0.0, si)
 
@@ -137,7 +147,7 @@ class Net:
     @staticmethod
     def _batch_normalize_bw(G, si, mean, var):
 
-        eps = 1e-5  # FIXME: How to set this?
+        eps = 1e-8
         N = G.shape[1]
         var_eps = var + eps
         si_zero_mean = si - mean
@@ -189,26 +199,26 @@ class Net:
         exp_sum = np.sum(exp_s, axis=axis)
         return exp_s / exp_sum
 
-    def _cross_entropy_loss(self, X, Y):
+    def _cross_entropy_loss(self, X, Y, s_means=None, s_vars=None):
         N = X.shape[1]
-        _, P = self._forward(X)
+        _, P = self._forward(X, s_means, s_vars)
         loss = -Y * np.log(P)
         return np.sum(loss) / N
 
-    def compute_cost(self, X, Y):
+    def compute_cost(self, X, Y, s_means=None, s_vars=None):
         # Regularization term
         L_2 = np.sum([np.sum(Wi ** 2) for Wi in self.Ws])
         # Cross-entropy loss
-        ce_loss = self._cross_entropy_loss(X, Y)
+        ce_loss = self._cross_entropy_loss(X, Y, s_means, s_vars)
         # Sum of both contributions
         return ce_loss + self.lamb * L_2
 
-    def classify(self, X):
-        _, P = self._forward(X)
+    def classify(self, X, s_means=None, s_vars=None):
+        _, P = self._forward(X, s_means, s_vars)
         return np.argmax(P, axis=0)
 
-    def compute_accuracy(self, X, y):
-        y_star = self.classify(X)
+    def compute_accuracy(self, X, y, s_means=None, s_vars=None):
+        y_star = self.classify(X, s_means, s_vars)
         correct = np.sum([y_star == y])
         N = X.shape[1]
         return float(correct) / N
@@ -255,6 +265,10 @@ class Net:
         test_losses = [self._cross_entropy_loss(X_test, Y_test)]
         test_accuracies = [self.compute_accuracy(X_test, y_test)]
 
+        s_means_est = None
+        s_vars_est = None
+        alpha = 0.99
+
         # For each epoch
         for e in range(1, epochs + 1):
 
@@ -273,6 +287,12 @@ class Net:
                 if batch_normalize:
                     ss, s_means, s_vars, Hs, P = self._forward_bn(X_batch)
                     grads_W, grads_b = self._backward_bn(X_batch, Y_batch, P, Hs, ss, s_means, s_vars)
+                    if s_means_est is None:
+                        s_means_est = s_means
+                        s_vars_est = s_vars
+                    else:
+                        s_means_est = [alpha * s_means_est[l] + (1 - alpha) * s_means[l] for l in range(len(s_means))]
+                        s_vars_est = [alpha * s_vars_est[l] + (1 - alpha) * s_vars[l] for l in range(len(s_vars))]
                 else:
                     Hs, P = self._forward(X_batch)
                     grads_W, grads_b = self._backward(X_batch, Y_batch, P, Hs)
@@ -288,13 +308,13 @@ class Net:
             eta *= decay_rate
 
             # Keep track of the performance at each epoch
-            costs.append(self.compute_cost(X, Y))
-            losses.append(self._cross_entropy_loss(X, Y))
-            accuracies.append(self.compute_accuracy(X, y))
+            costs.append(self.compute_cost(X, Y, s_means_est, s_vars_est))
+            losses.append(self._cross_entropy_loss(X, Y, s_means_est, s_vars_est))
+            accuracies.append(self.compute_accuracy(X, y, s_means_est, s_vars_est))
 
-            test_costs.append(self.compute_cost(X_test, Y_test))
-            test_losses.append(self._cross_entropy_loss(X_test, Y_test))
-            test_accuracies.append(self.compute_accuracy(X_test, y_test))
+            test_costs.append(self.compute_cost(X_test, Y_test, s_means_est, s_vars_est))
+            test_losses.append(self._cross_entropy_loss(X_test, Y_test, s_means_est, s_vars_est))
+            test_accuracies.append(self.compute_accuracy(X_test, y_test, s_means_est, s_vars_est))
 
             dJ = costs[-1] - costs[-2]
             dJ_star = test_costs[-1] - test_costs[-2]
@@ -312,7 +332,7 @@ class Net:
                 interval = tock_e - tick_e
                 times.append(interval)
                 rem = (epochs - e) * np.mean(times[-3:])
-                print('===> Epoch[{}]: {}s remaining, {} dJ, {} dJ*'.format(e, int(round(rem)), round(dJ, 5), round(dJ_star, 5)))
+                print('===> Epoch[{}]: {}s remaining, {} dJ, {} dJ*, {} J, {} J*, acc_v: {}%'.format(e, int(round(rem)), round(dJ, 5), round(dJ_star, 5), round(costs[-1], 5), round(test_costs[-1], 5), round(100.0*test_accuracies[-1], 5)))
 
             if overfitting_guard is not None and mean_dJ_star >= overfitting_guard:
                 print('Overfitting detected, aborting training...')
@@ -338,5 +358,6 @@ class Net:
             'accuracies': accuracies,
             'test_accuracies': test_accuracies,
             'speed': speed,
-            'test_speed': test_speed
+            'test_speed': test_speed,
+            'params': params
         }
