@@ -8,6 +8,7 @@
 
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
 from joblib import Parallel, delayed
 from os.path import exists
 from utilities import unpickle
@@ -21,8 +22,10 @@ COARSE_SEARCH_CONFIGS_PATH = '../configs_coarse.pkl'
 COARSE_SEARCH_RESULTS_PATH = '../results_coarse.pkl'
 
 
-def _search_worker(net_sizes, config, X, Y, X_test, Y_test):
-    net = Net(net_sizes, config)
+def _search_worker(net_sizes, config, Ws, bs, X, Y, X_test, Y_test):
+    net = Net(net_sizes, config, init_theta=False)
+    net.Ws = [W.copy() for W in Ws]
+    net.bs = [b.copy() for b in bs]
     return net.train(X.copy(), Y.copy(), X_test.copy(), Y_test.copy(), silent=True)
 
 
@@ -63,13 +66,17 @@ def params_search(min_eta, max_eta, min_lambda, max_lambda, silent=False, limit_
         'epochs': 10,
         'gamma': 0.9,
         'decay_rate': 0.98,
-        'lambda': 0.000001
+        'lambda': 0.000001,
+        'batch_normalize': True
     }
 
     configs = _get_configs(default_params, combs, min_eta, max_eta, min_lambda, max_lambda)
 
+    net = Net(net_sizes, default_params)
+    Ws, bs = net.Ws, net.bs
+
     parallel = Parallel(n_jobs=8, backend='multiprocessing', verbose=5)
-    results = parallel(delayed(_search_worker)(net_sizes, c, X, Y, X_test, Y_test) for c in configs)
+    results = parallel(delayed(_search_worker)(net_sizes, c, Ws, bs, X, Y, X_test, Y_test) for c in configs)
 
     if not silent:
         print("Parameters search done.")
@@ -77,33 +84,79 @@ def params_search(min_eta, max_eta, min_lambda, max_lambda, silent=False, limit_
     return configs, results
 
 
+def print_top3(configs_df, results_df):
+    test_accs = np.array([x[-1] for x in results_df['test_accuracies']])
+    top3 = list(np.argsort(test_accs)[-3:])
+    top3.reverse()
+    print('Top 3 configurations (1st, 2nd, 3rd):\n')
+    for i in top3:
+        config = configs_df.iloc[i]
+        print("Test accuracy: ", test_accs[i], "\n", config, "\n")
+
+
+def plot_search(configs_df, results_df, fig_path=None, exponents=False):
+    lambs = np.array(configs_df['lambda'])
+    etas = np.array(configs_df['eta'])
+    test_accs = np.array([x[-1] for x in results_df['test_accuracies']])
+    plt.figure()
+
+    if exponents:
+        lambs = np.log10(lambs)
+        etas = np.log10(etas)
+        plt.xlabel(r'$log_{10}(\lambda)$')
+        plt.ylabel(r'$log_{10}(\eta)$')
+    else:
+        plt.xscale('log')
+        plt.yscale('log')
+        plt.xlabel(r'$\lambda$')
+        plt.ylabel(r'$\eta$')
+
+    plt.scatter(lambs, etas, c=test_accs, marker='^')
+    cb = plt.colorbar()
+    cb.set_label('test accuracy')
+    if fig_path is not None:
+        plt.savefig(fig_path, bbox_inches='tight')
+    plt.show()
+
+
 def coarse_search(combs=100):
-    min_eta, max_eta = (10 ** (-1.85), 10 ** (-1.55))
-    min_lambda, max_lambda = (10 ** (-6), 10 ** (-2.2))
-    configs, results = params_search(min_eta, max_eta, min_lambda, max_lambda, combs=combs)
+    range_e_eta = (-2.00, -1.00)
+    range_e_lam = (-6.00, -1.00)
+    ranges = tuple(10**x for x in (*range_e_eta, *range_e_lam))
+    configs, results = params_search(*ranges, combs=combs)
     pd.DataFrame(configs).to_pickle(COARSE_SEARCH_CONFIGS_PATH)
     pd.DataFrame(results).to_pickle(COARSE_SEARCH_RESULTS_PATH)
 
 
 def fine_search(combs=100):
-    min_eta, max_eta = (10 ** (-1.85), 10 ** (-1.55))
-    min_lambda, max_lambda = (10 ** (-6), 10 ** (-2.2))
-    configs, results = params_search(min_eta, max_eta, min_lambda, max_lambda, combs=combs)
+    range_e_eta = (-2.00, -1.70)
+    range_e_lam = (-6.00, -3.00)
+    ranges = tuple(10**x for x in (*range_e_eta, *range_e_lam))
+    configs, results = params_search(*ranges, combs=combs)
     pd.DataFrame(configs).to_pickle(FINE_SEARCH_CONFIGS_PATH)
     pd.DataFrame(results).to_pickle(FINE_SEARCH_RESULTS_PATH)
 
 
-if __name__ == '__main__':
+def run_search():
 
+    print('Coarse search:')
     if not exists(COARSE_SEARCH_RESULTS_PATH):
-        coarse_search(combs=1)
-    results_coarse_df = unpickle(COARSE_SEARCH_RESULTS_PATH)
-    configs_coarse_df = unpickle(COARSE_SEARCH_CONFIGS_PATH)
+        coarse_search(combs=100)
+    results_coarse_df_ = unpickle(COARSE_SEARCH_RESULTS_PATH)
+    configs_coarse_df_ = unpickle(COARSE_SEARCH_CONFIGS_PATH)
+    print_top3(configs_coarse_df_, results_coarse_df_)
+    plot_search(configs_coarse_df_, results_coarse_df_, '../Report/Figs/coarse.eps')
 
+    print('\n\n')
 
-    exit(0)
-
+    print('Fine search:')
     if not exists(FINE_SEARCH_RESULTS_PATH):
         fine_search(combs=100)
-    results_fine_df = unpickle(FINE_SEARCH_RESULTS_PATH)
-    configs_fine_df = unpickle(FINE_SEARCH_CONFIGS_PATH)
+    results_fine_df_ = unpickle(FINE_SEARCH_RESULTS_PATH)
+    configs_fine_df_ = unpickle(FINE_SEARCH_CONFIGS_PATH)
+    print_top3(configs_fine_df_, results_fine_df_)
+    plot_search(configs_fine_df_, results_fine_df_, '../Report/Figs/fine.eps')
+
+
+if __name__ == '__main__':
+    run_search()
