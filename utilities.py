@@ -9,14 +9,17 @@
 import os
 import numpy as np
 
+
 def unpickle(filename):
     import pickle
     with open(filename, 'rb') as fo:
         res = pickle.load(fo, encoding='bytes')
     return res
 
+
 def play_bell():
     os.system('afplay /System/Library/Sounds/Ping.aiff')
+
 
 def compute_gradients_num_slow(X, Y, W, b, lamb, h, cost_fn):
     assert len(W) == len(b)
@@ -56,6 +59,7 @@ def compute_gradients_num_slow(X, Y, W, b, lamb, h, cost_fn):
 
     return grads_W, grads_b
 
+
 def compute_gradients_num(X, Y, W, b, lamb, h, cost_fn):
     assert len(W) == len(b)
     c = cost_fn(X, Y, W, b, lamb)
@@ -87,9 +91,11 @@ def compute_gradients_num(X, Y, W, b, lamb, h, cost_fn):
 
     return grads_W, grads_b
 
+
 def relative_err(a,b,eps=1e-12):
     assert a.shape == b.shape
     return np.abs(a-b) / np.maximum(eps, np.abs(a)+np.abs(b))
+
 
 def compare_dthetas(lhs,rhs):
     assert len(lhs) == len(rhs)
